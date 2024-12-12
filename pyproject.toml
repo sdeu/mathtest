@@ -1,0 +1,32 @@
+[project]
+name = "mathtest"
+version = "0.1"
+description = ""
+readme = "README.md"
+authors = [{name = "Steffen Deubler"}]
+license = {text = "Apache-2.0"}
+requires-python = ">=3.10"
+classifiers = [
+    "License :: OSI Approved :: Apache Software License"
+]
+dependencies = [
+    "click",
+    "PyQt5",
+    "fuzzywuzzy"
+]
+
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project.urls]
+Homepage = "https://github.com/sdeu/mathtest"
+Changelog = "https://github.com/sdeu/mathtest/releases"
+Issues = "https://github.com/sdeu/mathtest/issues"
+CI = "https://github.com/sdeu/mathtest/actions"
+
+[project.scripts]
+mathtest = "mathtest.cli:cli"
+
+[project.optional-dependencies]
+test = ["pytest"]
