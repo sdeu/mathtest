@@ -12,7 +12,8 @@ classifiers = [
 dependencies = [
     "click",
     "PyQt5",
-    "fuzzywuzzy"
+    "fuzzywuzzy",
+    "jinja2"
 ]
 
 [build-system]

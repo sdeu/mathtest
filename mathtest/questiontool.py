@@ -1,210 +1,247 @@
-import os
+import sys
 import sqlite3
-from PyQt5.QtWidgets import (QMainWindow, QApplication, QLineEdit, QListWidget, QLabel,
-                             QPushButton, QVBoxLayout, QHBoxLayout, QWidget,
-                             QTextEdit, QFileDialog, QInputDialog, QListWidgetItem, QMessageBox)
+from PyQt5.QtWidgets import (
+    QApplication, QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
+    QLabel, QListWidget, QListWidgetItem, QLineEdit, QTextEdit, QFileDialog, QDialog,
+    QMessageBox, QSplitter
+)
 from PyQt5.QtCore import Qt
 from fuzzywuzzy import fuzz
+from jinja2 import Template
 import subprocess
 
-class QuestionTool(QMainWindow):
+# Database Initialization
+DB_FILE = "questions.db"
+
+def init_db():
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS questions (
+            id INTEGER PRIMARY KEY,
+            title TEXT,
+            content TEXT,
+            tags TEXT
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+
+class QuestionApp(QWidget):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("LaTeX Question Tool")
-        self.setGeometry(100, 100, 900, 700)
+        self.setWindowTitle("Test Question Manager")
+        self.setGeometry(100, 100, 800, 600)
 
-        # Initialize database
-        self.db_path = "questions.db"
-        self.init_db()
+        # Main Layout
+        main_layout = QHBoxLayout()
+        self.setLayout(main_layout)
 
-        # UI elements
-        self.search_input = QLineEdit()
-        self.search_input.setPlaceholderText("Search questions by tag or text...")
-        self.search_input.textChanged.connect(self.search_questions)
+        # Splitter to separate list and preview pane
+        self.splitter = QSplitter(Qt.Horizontal)
+        main_layout.addWidget(self.splitter)
 
+        # Left Panel - Question List and Buttons
+        left_panel = QVBoxLayout()
+        left_widget = QWidget()
+        left_widget.setLayout(left_panel)
+        self.splitter.addWidget(left_widget)
+
+        # Search Bar
+        self.search_bar = QLineEdit()
+        self.search_bar.setPlaceholderText("Search questions...")
+        self.search_bar.textChanged.connect(self.search_questions)
+        left_panel.addWidget(self.search_bar)
+
+        # Question List
         self.question_list = QListWidget()
-        self.question_list.itemClicked.connect(self.preview_question)
+        self.question_list.itemSelectionChanged.connect(self.update_preview)
+        left_panel.addWidget(self.question_list)
 
-        self.preview_label = QLabel("Select a question to preview")
-        self.preview_label.setAlignment(Qt.AlignCenter)
-        self.preview_label.setFixedHeight(300)
-
-        self.add_button = QPushButton("Add Question from File")
-        self.add_button.clicked.connect(self.add_question)
-
-        self.add_text_button = QPushButton("Add Question from Text")
-        self.add_text_button.clicked.connect(self.add_question_from_text)
-
-        self.edit_button = QPushButton("Edit Selected Question")
-        self.edit_button.clicked.connect(self.edit_question)
-
-        self.title_input = QLineEdit()
-        self.title_input.setPlaceholderText("Enter question title")
-
-        self.tag_input = QLineEdit()
-        self.tag_input.setPlaceholderText("Enter tags (comma-separated)")
-
-        self.latex_input = QTextEdit()
-        self.latex_input.setPlaceholderText("Enter LaTeX code for the question")
-
-        self.compile_button = QPushButton("Compile Test")
-        self.compile_button.clicked.connect(self.compile_test)
-
-        # Layout
-        layout = QVBoxLayout()
-        layout.addWidget(self.search_input)
-        layout.addWidget(self.question_list)
-        layout.addWidget(self.preview_label)
-
+        # Buttons
         button_layout = QHBoxLayout()
+        left_panel.addLayout(button_layout)
+
+        self.add_button = QPushButton("Add Question")
+        self.add_button.clicked.connect(self.add_question)
         button_layout.addWidget(self.add_button)
-        button_layout.addWidget(self.add_text_button)
+
+        self.edit_button = QPushButton("Edit Question")
+        self.edit_button.clicked.connect(self.edit_question)
         button_layout.addWidget(self.edit_button)
-        layout.addLayout(button_layout)
 
-        layout.addWidget(self.title_input)
-        layout.addWidget(self.tag_input)
-        layout.addWidget(self.latex_input)
-        layout.addWidget(self.compile_button)
+        self.delete_button = QPushButton("Delete Question")
+        self.delete_button.clicked.connect(self.delete_question)
+        button_layout.addWidget(self.delete_button)
 
-        container = QWidget()
-        container.setLayout(layout)
-        self.setCentralWidget(container)
+        self.generate_button = QPushButton("Generate Test PDF")
+        self.generate_button.clicked.connect(self.generate_pdf)
+        left_panel.addWidget(self.generate_button)
 
-        # Load questions
+        # Right Panel - Preview Pane
+        self.preview_text = QTextEdit()
+        self.preview_text.setReadOnly(True)
+        self.splitter.addWidget(self.preview_text)
+
+        # Load Questions
         self.load_questions()
-
-    def init_db(self):
-        if not os.path.exists(self.db_path):
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            cursor.execute("""
-                CREATE TABLE questions (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    title TEXT,
-                    latex_code TEXT,
-                    tags TEXT
-                )
-            """)
-            conn.commit()
-            conn.close()
 
     def load_questions(self):
         self.question_list.clear()
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
         cursor.execute("SELECT id, title, tags FROM questions")
-        for question_id, title, tags in cursor.fetchall():
-            item = QListWidgetItem(f"{question_id}: {title} [{tags}]")
+        for qid, title, tags in cursor.fetchall():
+            item = QListWidgetItem(f"{title} [{tags}]")
+            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
             item.setCheckState(Qt.Unchecked)
+            item.setData(Qt.UserRole, qid)
             self.question_list.addItem(item)
         conn.close()
 
     def search_questions(self):
-        query = self.search_input.text().strip().lower()
-        for i in range(self.question_list.count()):
-            item = self.question_list.item(i)
-            if fuzz.partial_ratio(query, item.text().lower()) >= 70:
-                item.setHidden(False)
-            else:
-                item.setHidden(True)
-
-    def preview_question(self, item):
-        question_id = int(item.text().split(":")[0])
-        conn = sqlite3.connect(self.db_path)
+        query = self.search_bar.text()
+        self.question_list.clear()
+        conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
-        cursor.execute("SELECT title, tags, latex_code FROM questions WHERE id = ?", (question_id,))
-        title, tags, latex_code = cursor.fetchone()
+        cursor.execute("SELECT id, title, tags FROM questions")
+        for qid, title, tags in cursor.fetchall():
+            if fuzz.partial_ratio(query.lower(), title.lower()) > 60 or fuzz.partial_ratio(query.lower(), tags.lower()) > 60:
+                item = QListWidgetItem(f"{title} [{tags}]")
+                item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+                item.setCheckState(Qt.Unchecked)
+                item.setData(Qt.UserRole, qid)
+                self.question_list.addItem(item)
         conn.close()
-        self.title_input.setText(title)
-        self.tag_input.setText(tags)
-        self.latex_input.setText(latex_code)
-        self.preview_label.setText(f"<pre>{latex_code}</pre>")
 
     def add_question(self):
-        file_path, _ = QFileDialog.getOpenFileName(self, "Select LaTeX File", "", "LaTeX Files (*.tex)")
-        if file_path:
-            with open(file_path, "r") as file:
-                latex_code = file.read()
-            title = os.path.basename(file_path)
-            tags, ok = QInputDialog.getText(self, "Add Tags", "Enter tags (comma-separated):")
-            if ok:
-                conn = sqlite3.connect(self.db_path)
-                cursor = conn.cursor()
-                cursor.execute("INSERT INTO questions (title, latex_code, tags) VALUES (?, ?, ?)", (title, latex_code, tags))
-                conn.commit()
-                conn.close()
+        dialog = QuestionForm()
+        if dialog.exec_():
+            self.load_questions()
+
+    def edit_question(self):
+        item = self.question_list.currentItem()
+        if item:
+            qid = item.data(Qt.UserRole)
+            dialog = QuestionForm(qid)
+            if dialog.exec_():
                 self.load_questions()
 
-    def add_question_from_text(self):
-        title = self.title_input.text().strip()
-        latex_code = self.latex_input.toPlainText().strip()
-        tags, ok = QInputDialog.getText(self, "Add Tags", "Enter tags (comma-separated):")
-        if ok:
-            conn = sqlite3.connect(self.db_path)
+    def delete_question(self):
+        item = self.question_list.currentItem()
+        if item:
+            qid = item.data(Qt.UserRole)
+            conn = sqlite3.connect(DB_FILE)
             cursor = conn.cursor()
-            cursor.execute("INSERT INTO questions (title, latex_code, tags) VALUES (?, ?, ?)", (title, latex_code, tags))
+            cursor.execute("DELETE FROM questions WHERE id=?", (qid,))
             conn.commit()
             conn.close()
             self.load_questions()
 
-    def edit_question(self):
-        selected_items = self.question_list.selectedItems()
-        if not selected_items:
-            QMessageBox.warning(self, "No Selection", "Please select a question to edit.")
-            return
+    def update_preview(self):
+        item = self.question_list.currentItem()
+        if item:
+            qid = item.data(Qt.UserRole)
+            conn = sqlite3.connect(DB_FILE)
+            cursor = conn.cursor()
+            cursor.execute("SELECT content FROM questions WHERE id=?", (qid,))
+            content = cursor.fetchone()[0]
+            conn.close()
+            self.preview_text.setText(content)
 
-        item = selected_items[0]
-        question_id = int(item.text().split(":")[0])
-
-        title = self.title_input.text().strip()
-        latex_code = self.latex_input.toPlainText().strip()
-        tags = self.tag_input.text().strip()
-
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        cursor.execute("UPDATE questions SET title = ?, latex_code = ?, tags = ? WHERE id = ?", (title, latex_code, tags, question_id))
-        conn.commit()
-        conn.close()
-        self.load_questions()
-        QMessageBox.information(self, "Question Updated", "The question has been updated successfully.")
-
-    def compile_test(self):
+    def generate_pdf(self):
         selected_questions = []
-        for i in range(self.question_list.count()):
-            item = self.question_list.item(i)
+        for index in range(self.question_list.count()):
+            item = self.question_list.item(index)
             if item.checkState() == Qt.Checked:
-                question_id = int(item.text().split(":")[0])
-                selected_questions.append(question_id)
+                qid = item.data(Qt.UserRole)
+                conn = sqlite3.connect(DB_FILE)
+                cursor = conn.cursor()
+                cursor.execute("SELECT title, content FROM questions WHERE id=?", (qid,))
+                title, content = cursor.fetchone()
+                selected_questions.append({"title": title, "content": content})
+                conn.close()
 
         if not selected_questions:
-            QMessageBox.warning(self, "No Questions Selected", "Please select at least one question to compile.")
+            QMessageBox.warning(self, "No Selection", "Select at least one question to generate the test.")
             return
 
-        conn = sqlite3.connect(self.db_path)
+        template = Template(r"""
+        \documentclass{article}
+        \usepackage{amsmath}
+        \begin{document}
+        {% for q in questions %}
+        \section*{{ q.title }}
+        {{ q.content }}
+        \newpage
+        {% endfor %}
+        \end{document}
+        """)
+
+        with open("test_document.tex", "w") as f:
+            f.write(template.render(questions=selected_questions))
+
+        subprocess.run(["pdflatex", "test_document.tex"])
+        QMessageBox.information(self, "Success", "Test document compiled successfully!")
+
+
+class QuestionForm(QDialog):
+    def __init__(self, qid=None):
+        super().__init__()
+        self.setWindowTitle("Add/Edit Question")
+        self.qid = qid
+        self.layout = QVBoxLayout()
+        self.setLayout(self.layout)
+
+        self.title_input = QLineEdit()
+        self.title_input.setPlaceholderText("Question Title")
+        self.layout.addWidget(self.title_input)
+
+        self.content_input = QTextEdit()
+        self.content_input.setPlaceholderText("Enter LaTeX code here...")
+        self.layout.addWidget(self.content_input)
+
+        self.tags_input = QLineEdit()
+        self.tags_input.setPlaceholderText("Tags (comma-separated)")
+        self.layout.addWidget(self.tags_input)
+
+        self.save_button = QPushButton("Save")
+        self.save_button.clicked.connect(self.save_question)
+        self.layout.addWidget(self.save_button)
+
+        if qid:
+            self.load_question()
+
+    def load_question(self):
+        conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
-        cursor.execute("SELECT latex_code FROM questions WHERE id IN ({})".format(
-            ",".join("?" * len(selected_questions))), selected_questions)
-        questions = cursor.fetchall()
+        cursor.execute("SELECT title, content, tags FROM questions WHERE id=?", (self.qid,))
+        title, content, tags = cursor.fetchone()
+        self.title_input.setText(title)
+        self.content_input.setText(content)
+        self.tags_input.setText(tags)
         conn.close()
 
-        output_path, _ = QFileDialog.getSaveFileName(self, "Save Compiled Test", "", "LaTeX Files (*.tex)")
-        if not output_path:
-            return
+    def save_question(self):
+        title = self.title_input.text()
+        content = self.content_input.toPlainText()
+        tags = self.tags_input.text()
 
-        with open(output_path, "w") as file:
-            file.write("\\documentclass{article}\n")
-            file.write("\\begin{document}\n")
-            for latex_code, in questions:
-                file.write(latex_code + "\n\n")
-            file.write("\\end{document}")
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        if self.qid:
+            cursor.execute("UPDATE questions SET title=?, content=?, tags=? WHERE id=?", (title, content, tags, self.qid))
+        else:
+            cursor.execute("INSERT INTO questions (title, content, tags) VALUES (?, ?, ?)", (title, content, tags))
+        conn.commit()
+        conn.close()
+        self.accept()
 
-        QMessageBox.information(self, "Test Compiled", f"Test successfully compiled and saved to {output_path}.")
 
-# Required to run the application
 if __name__ == "__main__":
-    import sys
+    init_db()
     app = QApplication(sys.argv)
-    window = QuestionTool()
+    window = QuestionApp()
     window.show()
     sys.exit(app.exec_())
